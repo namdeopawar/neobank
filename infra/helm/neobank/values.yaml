@@ -1,0 +1,156 @@
+# Default values for neobank Helm chart
+global:
+  imageRegistry: ghcr.io/your-org/neobank
+  imagePullPolicy: IfNotPresent
+  environment: production
+
+authService:
+  enabled: true
+  image:
+    repository: auth-service
+    tag: "1.0.0"
+  replicaCount: 2
+  service:
+    port: 3001
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPU: 70
+  env:
+    NODE_ENV: production
+    JWT_EXPIRES_IN: 15m
+    JWT_REFRESH_EXPIRES_IN: 7d
+
+accountService:
+  enabled: true
+  image:
+    repository: account-service
+    tag: "1.0.0"
+  replicaCount: 2
+  service:
+    port: 3002
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPU: 70
+
+transactionService:
+  enabled: true
+  image:
+    repository: transaction-service
+    tag: "1.0.0"
+  replicaCount: 2
+  service:
+    port: 3003
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 15
+    targetCPU: 65
+
+notificationService:
+  enabled: true
+  image:
+    repository: notification-service
+    tag: "1.0.0"
+  replicaCount: 1
+  service:
+    port: 3004
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+frontend:
+  enabled: true
+  image:
+    repository: frontend
+    tag: "1.0.0"
+  replicaCount: 2
+  service:
+    port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: neobank.example.com
+  apiHost: api.neobank.example.com
+  tls:
+    enabled: true
+    secretName: neobank-tls
+
+postgresql:
+  enabled: true
+  auth:
+    username: neobank
+    password: neobank_secret_change_in_prod
+    database: neobank_auth
+  primary:
+    persistence:
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+redis:
+  enabled: true
+  auth:
+    password: neobank_redis_secret_change_in_prod
+  master:
+    persistence:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+kafka:
+  enabled: false  # Enable for event-driven features
+  replicaCount: 1
+
+monitoring:
+  enabled: true
+  prometheus:
+    scrape: true
+  grafana:
+    dashboards: true

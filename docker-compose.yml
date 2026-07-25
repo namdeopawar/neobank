@@ -1,0 +1,269 @@
+version: '3.9'
+
+networks:
+  neobank-net:
+    driver: bridge
+
+volumes:
+  postgres-auth-data:
+  postgres-accounts-data:
+  postgres-transactions-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: neobank-postgres-auth
+    environment:
+      POSTGRES_DB: neobank_auth
+      POSTGRES_USER: neobank
+      POSTGRES_PASSWORD: neobank_secret
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks: [neobank-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neobank -d neobank_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-accounts:
+    image: postgres:16-alpine
+    container_name: neobank-postgres-accounts
+    environment:
+      POSTGRES_DB: neobank_accounts
+      POSTGRES_USER: neobank
+      POSTGRES_PASSWORD: neobank_secret
+    volumes:
+      - postgres-accounts-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks: [neobank-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neobank -d neobank_accounts"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-transactions:
+    image: postgres:16-alpine
+    container_name: neobank-postgres-transactions
+    environment:
+      POSTGRES_DB: neobank_transactions
+      POSTGRES_USER: neobank
+      POSTGRES_PASSWORD: neobank_secret
+    volumes:
+      - postgres-transactions-data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    networks: [neobank-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neobank -d neobank_transactions"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: neobank-redis
+    command: redis-server --requirepass neobank_redis_secret --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks: [neobank-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "neobank_redis_secret", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: neobank-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+    networks: [neobank-net]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: neobank-kafka
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "29092:29092"
+    networks: [neobank-net]
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── Application Services ─────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: neobank-auth
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: postgres-auth
+      DB_PORT: 5432
+      DB_NAME: neobank_auth
+      DB_USER: neobank
+      DB_PASSWORD: neobank_secret
+      REDIS_URL: redis://:neobank_redis_secret@redis:6379
+      JWT_SECRET: local-dev-jwt-secret-change-in-prod
+      JWT_REFRESH_SECRET: local-dev-refresh-secret-change-in-prod
+      CORS_ORIGIN: http://localhost:3000
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [neobank-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  account-service:
+    build:
+      context: ./services/account-service
+      dockerfile: Dockerfile
+    container_name: neobank-accounts
+    environment:
+      ENV: production
+      PORT: 3002
+      DB_HOST: postgres-accounts
+      DB_PORT: 5432
+      DB_NAME: neobank_accounts
+      DB_USER: neobank
+      DB_PASSWORD: neobank_secret
+      AUTH_SERVICE_URL: http://auth-service:3001
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres-accounts:
+        condition: service_healthy
+    networks: [neobank-net]
+    restart: unless-stopped
+
+  transaction-service:
+    build:
+      context: ./services/transaction-service
+      dockerfile: Dockerfile
+    container_name: neobank-transactions
+    environment:
+      ENV: production
+      PORT: 3003
+      DB_HOST: postgres-transactions
+      DB_PORT: 5432
+      DB_NAME: neobank_transactions
+      DB_USER: neobank
+      DB_PASSWORD: neobank_secret
+      KAFKA_BROKERS: kafka:9092
+      ACCOUNT_SERVICE_URL: http://account-service:3002
+      AUTH_SERVICE_URL: http://auth-service:3001
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres-transactions:
+        condition: service_healthy
+    networks: [neobank-net]
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: neobank-notifications
+    environment:
+      ENV: production
+      PORT: 3004
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://:neobank_redis_secret@redis:6379
+    ports:
+      - "3004:3004"
+    depends_on:
+      - kafka
+      - redis
+    networks: [neobank-net]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+    container_name: neobank-frontend
+    ports:
+      - "3000:80"
+    networks: [neobank-net]
+    restart: unless-stopped
+
+  # ─── API Gateway (Nginx) ──────────────────────────────────────────
+  api-gateway:
+    image: nginx:1.25-alpine
+    container_name: neobank-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - account-service
+      - transaction-service
+      - notification-service
+    networks: [neobank-net]
+    restart: unless-stopped
+
+  # ─── Monitoring ───────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: neobank-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [neobank-net]
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: neobank-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: neobank_grafana
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3010:3000"
+    depends_on: [prometheus]
+    networks: [neobank-net]

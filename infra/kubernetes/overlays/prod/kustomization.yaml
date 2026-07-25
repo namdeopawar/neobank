@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: neobank
+
+resources:
+  - ../../base
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      labelSelector: "tier=backend"
+
+images:
+  - name: neobank/auth-service
+    newTag: "1.0.0"
+  - name: neobank/account-service
+    newTag: "1.0.0"
+  - name: neobank/transaction-service
+    newTag: "1.0.0"
+  - name: neobank/frontend
+    newTag: "1.0.0"
+
+commonLabels:
+  environment: production

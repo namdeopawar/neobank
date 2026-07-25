@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neobank
+  labels:
+    name: neobank
+    environment: production
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neobank-service-account
+  namespace: neobank
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neobank-role
+  namespace: neobank
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neobank-rolebinding
+  namespace: neobank
+subjects:
+  - kind: ServiceAccount
+    name: neobank-service-account
+    namespace: neobank
+roleRef:
+  kind: Role
+  name: neobank-role
+  apiGroup: rbac.authorization.k8s.io

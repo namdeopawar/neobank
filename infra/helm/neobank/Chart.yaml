@@ -1,0 +1,29 @@
+apiVersion: v2
+name: neobank
+description: NeoBank - A realistic digital banking platform for DevOps training
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - banking
+  - microservices
+  - devops
+  - training
+maintainers:
+  - name: NeoBank DevOps Team
+home: https://github.com/your-org/neobank
+sources:
+  - https://github.com/your-org/neobank
+dependencies:
+  - name: postgresql
+    version: "13.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "18.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: kafka
+    version: "26.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: kafka.enabled

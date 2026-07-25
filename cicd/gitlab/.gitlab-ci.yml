@@ -1,0 +1,190 @@
+image: docker:24.0
+
+stages:
+  - test
+  - security
+  - build
+  - deploy-dev
+  - deploy-staging
+  - deploy-prod
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  REGISTRY: $CI_REGISTRY
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+services:
+  - docker:24.0-dind
+
+# ─── Templates ───────────────────────────────────────────────────────
+.build-template: &build-template
+  stage: build
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - |
+      docker buildx build \
+        --platform linux/amd64,linux/arm64 \
+        --cache-from $REGISTRY/$CI_PROJECT_PATH/$SERVICE:cache \
+        --cache-to $REGISTRY/$CI_PROJECT_PATH/$SERVICE:cache \
+        -t $REGISTRY/$CI_PROJECT_PATH/$SERVICE:$IMAGE_TAG \
+        -t $REGISTRY/$CI_PROJECT_PATH/$SERVICE:$CI_COMMIT_REF_SLUG \
+        --push \
+        services/$SERVICE
+  only:
+    - main
+    - develop
+    - /^release\/.*/
+
+.deploy-template: &deploy-template
+  image: bitnami/kubectl:latest
+  before_script:
+    - echo "$KUBE_CONFIG" | base64 -d > /tmp/kubeconfig
+    - export KUBECONFIG=/tmp/kubeconfig
+
+# ─── Test Stage ──────────────────────────────────────────────────────
+test:auth:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key: auth-$CI_COMMIT_REF_SLUG
+    paths:
+      - services/auth-service/node_modules/
+  before_script:
+    - cd services/auth-service && npm ci
+  script:
+    - npm run lint || true
+    - npx tsc --noEmit
+    - npm test -- --passWithNoTests
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: services/auth-service/coverage/cobertura-coverage.xml
+    expire_in: 1 week
+
+test:account:
+  stage: test
+  image: golang:1.21-alpine
+  cache:
+    key: account-$CI_COMMIT_REF_SLUG
+    paths:
+      - /root/.cache/go-build
+  before_script:
+    - cd services/account-service
+    - apk add --no-cache git
+  script:
+    - go vet ./...
+    - go build ./...
+    - go test ./... -race -coverprofile=coverage.out || true
+  artifacts:
+    paths:
+      - services/account-service/coverage.out
+    expire_in: 1 week
+
+test:transaction:
+  stage: test
+  image: python:3.11-slim
+  cache:
+    key: txn-$CI_COMMIT_REF_SLUG
+    paths:
+      - .pip-cache/
+  before_script:
+    - cd services/transaction-service
+    - pip install -r requirements.txt --cache-dir=.pip-cache
+  script:
+    - pip install ruff mypy
+    - ruff check src/ || true
+    - pytest tests/ -v --tb=short || true
+
+# ─── Security Stage ───────────────────────────────────────────────────
+security:trivy:
+  stage: security
+  script:
+    - apk add --no-cache wget
+    - wget -qO- https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format table .
+  allow_failure: true
+
+security:sast:
+  stage: security
+  include:
+    - template: Security/SAST.gitlab-ci.yml
+  variables:
+    SAST_EXCLUDED_PATHS: "spec, test, tests, tmp"
+
+# ─── Build Stage ─────────────────────────────────────────────────────
+build:auth:
+  <<: *build-template
+  variables:
+    SERVICE: auth-service
+
+build:account:
+  <<: *build-template
+  variables:
+    SERVICE: account-service
+
+build:transaction:
+  <<: *build-template
+  variables:
+    SERVICE: transaction-service
+
+build:notification:
+  <<: *build-template
+  variables:
+    SERVICE: notification-service
+
+build:frontend:
+  <<: *build-template
+  variables:
+    SERVICE: frontend
+
+# ─── Deploy Stages ────────────────────────────────────────────────────
+deploy:dev:
+  <<: *deploy-template
+  stage: deploy-dev
+  script:
+    - kubectl kustomize infra/kubernetes/overlays/dev | kubectl apply -f -
+    - kubectl rollout status deployment/auth-service -n neobank-dev --timeout=120s
+    - kubectl rollout status deployment/account-service -n neobank-dev --timeout=120s
+  environment:
+    name: development
+    url: https://dev.neobank.example.com
+  only:
+    - develop
+  variables:
+    KUBE_CONFIG: $KUBE_CONFIG_DEV
+
+deploy:staging:
+  <<: *deploy-template
+  stage: deploy-staging
+  script:
+    - kubectl kustomize infra/kubernetes/overlays/staging | kubectl apply -f -
+    - for svc in auth-service account-service transaction-service; do
+        kubectl rollout status deployment/$svc -n neobank-staging --timeout=300s;
+      done
+  environment:
+    name: staging
+    url: https://staging.neobank.example.com
+  only:
+    - main
+  variables:
+    KUBE_CONFIG: $KUBE_CONFIG_STAGING
+  when: on_success
+
+deploy:production:
+  <<: *deploy-template
+  stage: deploy-prod
+  script:
+    - chmod +x scripts/deploy-blue-green.sh
+    - ./scripts/deploy-blue-green.sh production $CI_COMMIT_TAG
+  environment:
+    name: production
+    url: https://neobank.example.com
+  only:
+    - /^v\d+\.\d+\.\d+$/
+  variables:
+    KUBE_CONFIG: $KUBE_CONFIG_PROD
+  when: manual
+  allow_failure: false

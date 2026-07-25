@@ -1,0 +1,58 @@
+# Node.js
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+.npm
+coverage/
+.env
+.env.local
+
+# Go
+/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+.venv/
+venv/
+htmlcov/
+
+# Docker
+.docker/
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# Helm
+*.tgz
+charts/*.tgz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets (never commit these)
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.yaml
+secrets.json
+*secret*.env

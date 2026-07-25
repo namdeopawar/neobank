@@ -1,0 +1,225 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+            apiVersion: v1
+            kind: Pod
+            spec:
+              containers:
+              - name: docker
+                image: docker:24.0-dind
+                securityContext:
+                  privileged: true
+                volumeMounts:
+                - name: docker-sock
+                  mountPath: /var/run/docker.sock
+              - name: node
+                image: node:20-alpine
+                command: ["sleep", "infinity"]
+              - name: golang
+                image: golang:1.21-alpine
+                command: ["sleep", "infinity"]
+              - name: python
+                image: python:3.11-slim
+                command: ["sleep", "infinity"]
+              - name: kubectl
+                image: bitnami/kubectl:latest
+                command: ["sleep", "infinity"]
+              volumes:
+              - name: docker-sock
+                hostPath:
+                  path: /var/run/docker.sock
+            '''
+        }
+    }
+
+    options {
+        timeout(time: 45, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+
+    environment {
+        REGISTRY = 'registry.neobank.internal'
+        IMAGE_TAG = "${GIT_COMMIT.take(8)}"
+        SLACK_CHANNEL = '#deployments'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_BRANCH_NAME = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+                    env.GIT_COMMIT_MSG = sh(returnStdout: true, script: 'git log -1 --pretty=%B').trim()
+                }
+            }
+        }
+
+        stage('Test') {
+            parallel {
+                stage('Auth Service Tests') {
+                    steps {
+                        container('node') {
+                            dir('services/auth-service') {
+                                sh 'npm ci'
+                                sh 'npx tsc --noEmit'
+                                sh 'npm test -- --passWithNoTests --coverage || true'
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'services/auth-service/junit.xml'
+                        }
+                    }
+                }
+
+                stage('Account Service Tests') {
+                    steps {
+                        container('golang') {
+                            dir('services/account-service') {
+                                sh 'apk add --no-cache git'
+                                sh 'go vet ./...'
+                                sh 'go build ./...'
+                                sh 'go test ./... -race || true'
+                            }
+                        }
+                    }
+                }
+
+                stage('Transaction Service Tests') {
+                    steps {
+                        container('python') {
+                            dir('services/transaction-service') {
+                                sh 'pip install -r requirements.txt -q'
+                                sh 'pip install ruff -q'
+                                sh 'ruff check src/ || true'
+                                sh 'pytest tests/ -v || true'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                container('docker') {
+                    sh '''
+                        wget -qO- https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || true
+                        trivy fs --exit-code 0 --severity HIGH,CRITICAL --format table . || true
+                    '''
+                }
+            }
+        }
+
+        stage('Build Images') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                    tag pattern: 'v\\d+\\.\\d+\\.\\d+', comparator: 'REGEXP'
+                }
+            }
+            steps {
+                container('docker') {
+                    script {
+                        def services = ['auth-service', 'account-service', 'transaction-service', 'notification-service', 'frontend']
+
+                        withCredentials([usernamePassword(credentialsId: 'registry-credentials', usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASS')]) {
+                            sh "docker login -u ${REGISTRY_USER} -p ${REGISTRY_PASS} ${REGISTRY}"
+
+                            services.each { svc ->
+                                sh """
+                                    docker build \
+                                        -t ${REGISTRY}/neobank/${svc}:${IMAGE_TAG} \
+                                        -t ${REGISTRY}/neobank/${svc}:${GIT_BRANCH_NAME.replaceAll('/', '-')} \
+                                        services/${svc}/
+                                    docker push ${REGISTRY}/neobank/${svc}:${IMAGE_TAG}
+                                    docker push ${REGISTRY}/neobank/${svc}:${GIT_BRANCH_NAME.replaceAll('/', '-')}
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Dev') {
+            when { branch 'develop' }
+            steps {
+                container('kubectl') {
+                    withCredentials([file(credentialsId: 'kubeconfig-dev', variable: 'KUBECONFIG')]) {
+                        sh '''
+                            kubectl kustomize infra/kubernetes/overlays/dev | kubectl apply -f -
+                            kubectl rollout status deployment/auth-service -n neobank-dev --timeout=120s
+                            kubectl rollout status deployment/account-service -n neobank-dev --timeout=120s
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            when { branch 'main' }
+            steps {
+                container('kubectl') {
+                    withCredentials([file(credentialsId: 'kubeconfig-staging', variable: 'KUBECONFIG')]) {
+                        sh '''
+                            kubectl kustomize infra/kubernetes/overlays/staging | kubectl apply -f -
+                            for svc in auth-service account-service transaction-service notification-service frontend; do
+                                kubectl rollout status deployment/$svc -n neobank-staging --timeout=300s
+                            done
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Production Approval') {
+            when { buildingTag() }
+            steps {
+                timeout(time: 24, unit: 'HOURS') {
+                    input message: "Deploy ${IMAGE_TAG} to Production?",
+                          ok: 'Deploy',
+                          submitter: 'release-managers'
+                }
+            }
+        }
+
+        stage('Deploy to Production') {
+            when { buildingTag() }
+            steps {
+                container('kubectl') {
+                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                        sh "chmod +x scripts/deploy-blue-green.sh && ./scripts/deploy-blue-green.sh production ${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'good',
+                message: "✅ *${currentBuild.currentResult}* | `${env.JOB_NAME}` #${env.BUILD_NUMBER} | Branch: `${env.GIT_BRANCH_NAME}` | <${env.BUILD_URL}|View Build>"
+            )
+        }
+        failure {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'danger',
+                message: "❌ *${currentBuild.currentResult}* | `${env.JOB_NAME}` #${env.BUILD_NUMBER} | Branch: `${env.GIT_BRANCH_NAME}` | Commit: ${env.GIT_COMMIT_MSG} | <${env.BUILD_URL}|View Build>"
+            )
+        }
+    }
+}

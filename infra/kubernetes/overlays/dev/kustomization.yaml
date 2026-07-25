@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: neobank-dev
+
+resources:
+  - ../../base
+
+namePrefix: dev-
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+    target:
+      kind: Deployment
+      labelSelector: "tier=backend"
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 64Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 256Mi
+    target:
+      kind: Deployment
+      name: auth-service
+
+images:
+  - name: neobank/auth-service
+    newTag: dev
+  - name: neobank/account-service
+    newTag: dev
+  - name: neobank/transaction-service
+    newTag: dev
+  - name: neobank/frontend
+    newTag: dev
+
+commonLabels:
+  environment: dev
