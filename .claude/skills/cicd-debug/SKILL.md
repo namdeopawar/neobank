@@ -4,6 +4,47 @@ description: Debug CI/CD pipelines for NeoBank — GitHub Actions, GitLab CI, Je
 
 # NeoBank CI/CD Debugging
 
+## NeoBank-Specific CI Fixes (Already Applied)
+
+These issues were hit and fixed getting the pipeline green. Do NOT redo them — they are in the committed code.
+
+### Branch naming
+Workflow triggers on `main`; repo initializes to `master`. Fixed by:
+```bash
+GH_TOKEN=... gh api repos/namdeopawar/neobank/branches/master/rename -X POST -f new_name=main
+git branch -m master main && git branch -u origin/main main
+```
+
+### go.sum must be generated with golang:1.21-alpine
+Local Go (1.25) resolves different transitive deps than CI (1.21) → mismatched go.sum hashes. Always use:
+```bash
+docker run --rm -v $(pwd)/services/account-service:/app -w /app golang:1.21-alpine \
+  sh -c "apk add --no-cache git && GOFLAGS=-mod=mod go mod tidy"
+```
+
+### Go runner cache pollution
+CI runner's shared module cache can surface `golang-migrate/v4@v4.16.2` as missing from go.sum. Fixed in `ci.yml` test step:
+```yaml
+env:
+  CGO_ENABLED: 1
+  GOFLAGS: -mod=mod
+  GONOSUMCHECK: "*"
+```
+
+### Auth service tests
+Three fixes required in `services/auth-service/`:
+1. `@types/jest` in devDependencies (TypeScript needs it for `describe`/`it`/`expect`)
+2. Jest config uses `transform` key (not deprecated `globals`):
+   ```json
+   "transform": { "^.+\\.tsx?$": ["ts-jest", { "tsconfig": { "strict": false } }] }
+   ```
+3. `src/index.ts`: `bootstrap()` guarded — `if (process.env.NODE_ENV !== 'test') { bootstrap(); }` — CI sets `NODE_ENV: test` so the DB connection is skipped
+
+### CI image registry
+The pipeline builds and pushes to **ghcr.io** (GitHub Container Registry) using the auto-provided `GITHUB_TOKEN`. Docker Hub credentials are NOT needed. Docker Hub images (`namdeopawar/neobank-*:latest`) were pushed manually once as a reference, but CI does not use them.
+
+---
+
 ## GitHub Actions (`.github/workflows/ci.yml`)
 
 ### Run locally with `act`
@@ -23,15 +64,19 @@ act pull_request
 
 ### Required repository secrets
 
-Go to GitHub → Settings → Secrets → Actions and add:
+Set via: `gh secret set <NAME> --repo namdeopawar/neobank --body "<value>"`
 
-| Secret | Value |
-|---|---|
-| `DOCKER_USERNAME` | Docker Hub username |
-| `DOCKER_PASSWORD` | Docker Hub token (not password) |
-| `KUBE_CONFIG` | `base64 -w0 ~/.kube/config` |
-| `SNYK_TOKEN` | From snyk.io account |
-| `SLACK_WEBHOOK_URL` | Slack incoming webhook |
+| Secret | Required | Value |
+|---|---|---|
+| `GITHUB_TOKEN` | Auto | Provided automatically — do not set manually |
+| `KUBE_CONFIG_DEV` | Yes (deploy-dev job) | `base64 -i ~/.kube/config \| tr -d '\n'` — kubeconfig for dev cluster |
+| `KUBE_CONFIG_STAGING` | Yes (deploy-staging job) | Same format — kubeconfig for staging cluster |
+| `KUBE_CONFIG_PROD` | Yes (deploy-production job) | Same format — kubeconfig for prod cluster |
+| `SNYK_TOKEN` | Optional | From snyk.io — step has `continue-on-error: true` |
+| `DOCKER_USERNAME` | **Not needed** | CI uses ghcr.io, not Docker Hub |
+| `DOCKER_PASSWORD` | **Not needed** | CI uses ghcr.io, not Docker Hub |
+
+> Currently all KUBE_CONFIG_* secrets point to the local `kind-cka-lab` cluster (for training). Replace with real cloud cluster kubeconfigs when deploying for real.
 
 ### Common GitHub Actions failures
 

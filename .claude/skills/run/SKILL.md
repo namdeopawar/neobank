@@ -135,6 +135,8 @@ curl -s http://localhost:3001/metrics | head -20
 
 All 14 containers confirmed healthy. Full browser flow tested at http://localhost:8080 (api-gateway + frontend + all backend services). Professional React UI with Inter font, SVG icons, CSS design system — login, register, dashboard, accounts, transactions (deposit + history), transfer (step indicator), profile all functional.
 
+GitHub Actions CI pipeline passed (commit `e67a175`): Auth/Go/Python tests ✓, security scan ✓, all 5 images pushed to `ghcr.io/namdeopawar/neobank/*`. Deploy to Staging is expected to fail until `KUBE_CONFIG_STAGING` is replaced with a real cloud cluster kubeconfig.
+
 ## Service URLs
 - Frontend: http://localhost:3000
 - API Gateway: http://localhost:8080
