@@ -78,6 +78,8 @@ jobs:
         run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
         env:
           CGO_ENABLED: 1
+          GOFLAGS: -mod=mod
+          GONOSUMCHECK: "*"
 
       - name: Build
         run: CGO_ENABLED=0 GOOS=linux go build -o /tmp/account-service ./cmd/main.go
